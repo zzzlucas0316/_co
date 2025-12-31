@@ -1,0 +1,87 @@
+// This file is part of www.nand2tetris.org
+// and the book "The Elements of Computing Systems"
+// by Nisan and Schocken, MIT Press.
+// File name: projects/5/CPU.hdl
+/**
+ * The Hack Central Processing unit (CPU).
+ * Parses the binary code in the instruction input and executes it according to the
+ * Hack machine language specification. In the case of a C-instruction, computes the
+ * function specified by the instruction. If the instruction specifies to read a memory
+ * value, the inM input is expected to contain this value. If the instruction specifies
+ * to write a value to the memory, sets the outM output to this value, sets the addressM
+ * output to the target address, and asserts the writeM output (when writeM = 0, any
+ * value may appear in outM).
+ * If the reset input is 0, computes the address of the next instruction and sets the
+ * pc output to that value. If the reset input is 1, sets pc to 0.
+ * Note: The outM and writeM outputs are combinational: they are affected by the
+ * instruction's execution during the current cycle. The addressM and pc outputs are
+ * clocked: although they are affected by the instruction's execution, they commit to
+ * their new values only in the next cycle.
+ */
+CHIP CPU {
+
+    IN  inM[16],         // M value input  (M = contents of RAM[A])
+        instruction[16], // Instruction for execution
+        reset;           // Signals whether to re-start the current
+                         // program (reset==1) or continue executing
+                         // the current program (reset==0).
+
+    OUT outM[16],        // M value output
+        writeM,          // Write to M? 
+        addressM[15],    // Address in data memory (of M)
+        pc[15];          // address of next instruction
+
+    PARTS:
+	
+    // --- 指令解碼 (Instruction Decoding) ---
+    // instruction[15] 為 0: A-instruction; 為 1: C-instruction
+    Not(in=instruction[15], out=isAinst);
+    Not(in=isAinst, out=isCinst);
+
+    // --- A 暫存器邏輯 ---
+    // 若為 A-inst，載入指令內容；若為 C-inst 且 d1(instr[5]) 為 1，載入 ALU 輸出
+    And(a=isCinst, b=instruction[5], out=isALUtoA);
+    Mux16(a=instruction, b=outALU, sel=isCinst, out=inA);
+    Or(a=isAinst, b=isALUtoA, out=loadA);
+    ARegister(in=inA, load=loadA, out=outA, out[0..14]=addressM);
+
+    // --- D 暫存器邏輯 ---
+    // 只有在 C-inst 且 d2(instr[4]) 為 1 時才載入 D
+    And(a=isCinst, b=instruction[4], out=loadD);
+    DRegister(in=outALU, load=loadD, out=outD);
+
+    // --- ALU 輸入選擇 (A 暫存器或 Memory) ---
+    // instruction[12] 為 'a' 位元，決定使用 A (0) 還是 M (1)
+    Mux16(a=outA, b=inM, sel=instruction[12], out=outAM);
+
+    // --- ALU 運算單元 ---
+    // 使用 instruction[6..11] 作為 ALU 控制位元 (zx, nx, zy, ny, f, no)
+    ALU(x=outD, y=outAM, zx=instruction[11], nx=instruction[10], zy=instruction[9], ny=instruction[8], f=instruction[7], no=instruction[6], out=outALU, out=outM, zr=zr, ng=ng);
+
+    // --- 輸出控制 ---
+    // 當為 C-inst 且 d3(instr[3]) 為 1 時，寫入記憶體
+    And(a=isCinst, b=instruction[3], out=writeM);
+
+    // --- 程式計數器 PC 與 跳躍邏輯 (Jump Logic) ---
+    // 判斷 ALU 輸出狀態：正數 (pos)
+    Not(in=zr, out=notZr);
+    Not(in=ng, out=notNg);
+    And(a=notZr, b=notNg, out=pos);
+
+    // 檢查三種跳躍條件 (j1, j2, j3)
+    And(a=instruction[2], b=ng, out=j1);    // JLT: ALU < 0
+    And(a=instruction[1], b=zr, out=j2);    // JEQ: ALU = 0
+    And(a=instruction[0], b=pos, out=j3);   // JGT: ALU > 0
+
+    // 合併跳躍條件
+    Or(a=j1, b=j2, out=j12);
+    Or(a=j12, b=j3, out=jumpCondition);
+    
+    // 必須是 C-instruction 且符合跳躍條件才執行載入 PC
+    And(a=isCinst, b=jumpCondition, out=loadPC);
+    
+    // 如果不 Jump，則 PC++ (Inc)
+    Not(in=loadPC, out=incPC);
+
+    PC(in=outA, load=loadPC, inc=incPC, reset=reset, out[0..14]=pc);
+}
